@@ -1,5 +1,6 @@
 #import "RNWhisperContext.h"
 #import <Metal/Metal.h>
+#import <Accelerate/Accelerate.h>
 #include <vector>
 
 #define NUM_BYTES_PER_BUFFER 16 * 1024
@@ -192,6 +193,64 @@ bool vad(RNWhisperContextRecordState *state, int sliceIndex, int nSamples, int n
     return state->job->vad_simple(sliceIndex, nSamples, n);
 }
 
+static void computeFiveBands(float *pcm, int n, float sampleRate, float *bandValues) {
+    // FFT setup
+    int log2n = (int)log2f(n);
+    int fftSize = 1 << log2n;
+
+    // Allocate FFT buffers
+    float *windowed = (float *)malloc(sizeof(float) * fftSize);
+    float *magnitudes = (float *)malloc(sizeof(float) * (fftSize / 2));
+
+    // Apply Hann window
+    vDSP_hann_window(windowed, fftSize, vDSP_HANN_NORM);
+    vDSP_vmul(pcm, 1, windowed, 1, windowed, 1, fftSize);
+
+    // Prepare complex buffer
+    DSPSplitComplex splitComplex;
+    float *realp = (float *)malloc(sizeof(float) * fftSize / 2);
+    float *imagp = (float *)malloc(sizeof(float) * fftSize / 2);
+    splitComplex.realp = realp;
+    splitComplex.imagp = imagp;
+
+    FFTSetup fftSetup = vDSP_create_fftsetup(log2n, FFT_RADIX2);
+
+    // Convert float array to complex
+    vDSP_ctoz((DSPComplex *)windowed, 2, &splitComplex, 1, fftSize / 2);
+
+    // Perform FFT
+    vDSP_fft_zrip(fftSetup, &splitComplex, 1, log2n, FFT_FORWARD);
+
+    // Compute magnitudes
+    vDSP_zvmags(&splitComplex, 1, magnitudes, 1, fftSize / 2);
+
+    // Convert to RMS (sqrt of mean squares)
+    for (int i = 0; i < 5; i++) bandValues[i] = 0.0f;
+
+    // Define 5 frequency bands (Hz)
+    float bands[6] = {0, 200, 500, 1000, 4000, 8000};
+    for (int i = 0; i < fftSize / 2; i++) {
+        float freq = ((float)i * sampleRate) / (float)fftSize;
+        float mag = sqrtf(magnitudes[i] / (fftSize / 2));
+        for (int b = 0; b < 5; b++) {
+            if (freq >= bands[b] && freq < bands[b+1]) {
+                bandValues[b] += mag;
+            }
+        }
+    }
+
+    // Normalize by number of bins per band
+    for (int b = 0; b < 5; b++) {
+        bandValues[b] /= (bands[b+1] - bands[b]) / (sampleRate / fftSize);
+    }
+
+    free(windowed);
+    free(magnitudes);
+    free(realp);
+    free(imagp);
+    vDSP_destroy_fftsetup(fftSetup);
+}
+
 void AudioInputCallback(void * inUserData,
     AudioQueueRef inAQ,
     AudioQueueBufferRef inBuffer,
@@ -218,22 +277,19 @@ void AudioInputCallback(void * inUserData,
     int nSamples = state->sliceNSamples[state->sliceIndex];
     
     int16_t *pcm = (int16_t *)inBuffer->mAudioData;
-    float sumSquares = 0.0f;
-    float peak = 0.0f;
-    for (int i = 0; i < n; i++) {
-        float sample = pcm[i] / 32768.0f;
-        sumSquares += sample * sample;
-        if (fabs(sample) > peak) peak = fabs(sample);
-    }
-    float rms = sqrtf(sumSquares / n);
+    float bandValues[5];
+    computeFiveBands(pcm, n, WHISPER_SAMPLE_RATE, bandValues);
 
     RNWhisper *module = [RNWhisper sharedInstance];
     if (module) {
         dispatch_async(dispatch_get_main_queue(), ^{
             [module sendEventWithName:@"@RNWhisper_onAudioLevels"
                 body:@{
-                    @"rms": @(rms),
-                    @"peak": @(peak)
+                    @"band1": @(bandValues[0]),
+                    @"band2": @(bandValues[1]),
+                    @"band3": @(bandValues[2]),
+                    @"band4": @(bandValues[3]),
+                    @"band5": @(bandValues[4])
                 }];
         });
     }

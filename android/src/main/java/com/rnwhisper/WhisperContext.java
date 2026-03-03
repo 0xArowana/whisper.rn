@@ -24,6 +24,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.PushbackInputStream;
 
+import org.jtransforms.fft.FloatFFT_1D;
+
 public class WhisperContext {
   public static final String NAME = "RNWhisperContext";
 
@@ -122,6 +124,55 @@ public class WhisperContext {
     finishRealtimeTranscribeJob(jobId, context, sliceNSamples.stream().mapToInt(i -> i).toArray());
   }
 
+  private float[] computeFiveBands(short[] buffer, int n, int sampleRate) {
+    // Convert PCM16 -> float [-1,1]
+    float[] floatBuffer = new float[n];
+    for (int i = 0; i < n; i++) {
+        floatBuffer[i] = buffer[i] / 32768.0f;
+    }
+
+    // Zero pad to next power of 2
+    int fftSize = 1;
+    while (fftSize < n) fftSize <<= 1;
+    float[] fftData = new float[fftSize];
+    System.arraycopy(floatBuffer, 0, fftData, 0, n);
+
+    // Real FFT
+    FloatFFT_1D fft = new FloatFFT_1D(fftSize);
+    fft.realForward(fftData);
+
+    // Compute magnitudes
+    float[] mags = new float[fftSize / 2];
+    mags[0] = Math.abs(fftData[0]); // DC
+    for (int i = 1; i < fftSize / 2; i++) {
+        float re = fftData[2 * i];
+        float im = fftData[2 * i + 1];
+        mags[i] = (float)Math.sqrt(re * re + im * im);
+    }
+
+    // 5 frequency bands (0-200, 200-500, 500-1k, 1k-4k, 4k-8k)
+    float[] bands = new float[5];
+    int[] bandLimits = new int[6];
+    bandLimits[0] = 0;
+    bandLimits[1] = (int)(200 * fftSize / sampleRate);
+    bandLimits[2] = (int)(500 * fftSize / sampleRate);
+    bandLimits[3] = (int)(1000 * fftSize / sampleRate);
+    bandLimits[4] = (int)(4000 * fftSize / sampleRate);
+    bandLimits[5] = (int)(8000 * fftSize / sampleRate);
+
+    for (int b = 0; b < 5; b++) {
+        float sum = 0f;
+        int count = 0;
+        for (int i = bandLimits[b]; i < bandLimits[b + 1] && i < mags.length; i++) {
+            sum += mags[i];
+            count++;
+        }
+        bands[b] = count > 0 ? sum / count : 0f; // RMS-like average
+    }
+
+    return bands;
+  }
+
   public int startRealtimeTranscribe(int jobId, ReadableMap options) {
     if (isCapturing || isTranscribing) {
       return -100;
@@ -168,20 +219,13 @@ public class WhisperContext {
               int n = recorder.read(buffer, 0, bufferSize);
               if (n == 0) continue;
 
-              // --- AUDIO LEVELS CALCULATION ---
-              float sum = 0f;
-              float peak = 0f;
-              for (int i = 0; i < n; i++) {
-                  float sample = buffer[i] / 32768.0f; // normalize to [-1, 1]
-                  sum += sample * sample;
-                  if (Math.abs(sample) > peak) peak = Math.abs(sample);
-              }
-              float rms = (float) Math.sqrt(sum / n);
-
-              // Emit event to JS for visualizer
+              float[] bands = computeFiveBands(buffer, n, SAMPLE_RATE);
               WritableMap audioEvent = Arguments.createMap();
-              audioEvent.putDouble("rms", rms);
-              audioEvent.putDouble("peak", peak);
+              audioEvent.putDouble("band1", bands[0]);
+              audioEvent.putDouble("band2", bands[1]);
+              audioEvent.putDouble("band3", bands[2]);
+              audioEvent.putDouble("band4", bands[3]);
+              audioEvent.putDouble("band5", bands[4]);
               eventEmitter.emit("@RNWhisper_onAudioLevels", audioEvent);
 
               int totalNSamples = 0;
