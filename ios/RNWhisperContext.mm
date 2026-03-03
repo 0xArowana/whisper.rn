@@ -5,6 +5,18 @@
 
 #define NUM_BYTES_PER_BUFFER 16 * 1024
 
+@interface RNWhisperContext ()
+{
+    FFTSetup fftSetup;
+    int fftSize;
+    float *windowedBuffer;
+    float *magnitudesBuffer;
+    DSPSplitComplex splitComplex;
+    BOOL fftInitialized;
+    CFTimeInterval lastEmitTime;
+}
+@end
+
 @implementation RNWhisperContext
 
 static void whisper_log_callback_default(wsp_ggml_log_level level, const char * text, void * user_data) {
@@ -193,45 +205,53 @@ bool vad(RNWhisperContextRecordState *state, int sliceIndex, int nSamples, int n
     return state->job->vad_simple(sliceIndex, nSamples, n);
 }
 
-static void computeFiveBands(float *pcm, int n, float sampleRate, float *bandValues) {
-    // FFT setup
-    int log2n = (int)log2f(n);
-    int fftSize = 1 << log2n;
+- (void)initFFTWithSize:(int)n {
+    if (fftInitialized) return;
 
-    // Allocate FFT buffers
-    float *windowed = (float *)malloc(sizeof(float) * fftSize);
-    float *magnitudes = (float *)malloc(sizeof(float) * (fftSize / 2));
+    fftSize = 1 << ((int)log2f(n));
+    windowedBuffer = (float *)malloc(sizeof(float) * fftSize);
+    magnitudesBuffer = (float *)malloc(sizeof(float) * (fftSize/2));
+    splitComplex.realp = (float *)malloc(sizeof(float) * fftSize/2);
+    splitComplex.imagp = (float *)malloc(sizeof(float) * fftSize/2);
+    fftSetup = vDSP_create_fftsetup((int)log2f(fftSize), FFT_RADIX2);
+
+    fftInitialized = YES;
+    lastEmitTime = 0;
+}
+
+- (void)deallocFFT {
+    if (!fftInitialized) return;
+    free(windowedBuffer);
+    free(magnitudesBuffer);
+    free(splitComplex.realp);
+    free(splitComplex.imagp);
+    vDSP_destroy_fftsetup(fftSetup);
+    fftInitialized = NO;
+}
+
+static void computeFiveBands(float *pcm, int n, float sampleRate, RNWhisperContext *self, float *bandValues) {
+    [self initFFTWithSize:n];
 
     // Apply Hann window
-    vDSP_hann_window(windowed, fftSize, vDSP_HANN_NORM);
-    vDSP_vmul(pcm, 1, windowed, 1, windowed, 1, fftSize);
+    vDSP_hann_window(self->windowedBuffer, self->fftSize, vDSP_HANN_NORM);
+    vDSP_vmul(pcm, 1, self->windowedBuffer, 1, self->windowedBuffer, 1, self->fftSize);
 
-    // Prepare complex buffer
-    DSPSplitComplex splitComplex;
-    float *realp = (float *)malloc(sizeof(float) * fftSize / 2);
-    float *imagp = (float *)malloc(sizeof(float) * fftSize / 2);
-    splitComplex.realp = realp;
-    splitComplex.imagp = imagp;
+    // Convert to split complex
+    vDSP_ctoz((DSPComplex *)self->windowedBuffer, 2, &self->splitComplex, 1, self->fftSize/2);
 
-    FFTSetup fftSetup = vDSP_create_fftsetup(log2n, FFT_RADIX2);
-
-    // Convert float array to complex
-    vDSP_ctoz((DSPComplex *)windowed, 2, &splitComplex, 1, fftSize / 2);
-
-    // Perform FFT
-    vDSP_fft_zrip(fftSetup, &splitComplex, 1, log2n, FFT_FORWARD);
+    // Perform FFT in-place
+    vDSP_fft_zrip(self->fftSetup, &self->splitComplex, 1, (int)log2f(self->fftSize), FFT_FORWARD);
 
     // Compute magnitudes
-    vDSP_zvmags(&splitComplex, 1, magnitudes, 1, fftSize / 2);
+    vDSP_zvmags(&self->splitComplex, 1, self->magnitudesBuffer, 1, self->fftSize/2);
 
-    // Convert to RMS (sqrt of mean squares)
+    // Convert to RMS
     for (int i = 0; i < 5; i++) bandValues[i] = 0.0f;
 
-    // Define 5 frequency bands (Hz)
     float bands[6] = {0, 200, 500, 1000, 4000, 8000};
-    for (int i = 0; i < fftSize / 2; i++) {
-        float freq = ((float)i * sampleRate) / (float)fftSize;
-        float mag = sqrtf(magnitudes[i] / (fftSize / 2));
+    for (int i = 0; i < self->fftSize / 2; i++) {
+        float freq = ((float)i * sampleRate) / (float)self->fftSize;
+        float mag = sqrtf(self->magnitudesBuffer[i] / (self->fftSize / 2));
         for (int b = 0; b < 5; b++) {
             if (freq >= bands[b] && freq < bands[b+1]) {
                 bandValues[b] += mag;
@@ -239,16 +259,9 @@ static void computeFiveBands(float *pcm, int n, float sampleRate, float *bandVal
         }
     }
 
-    // Normalize by number of bins per band
     for (int b = 0; b < 5; b++) {
-        bandValues[b] /= (bands[b+1] - bands[b]) / (sampleRate / fftSize);
+        bandValues[b] /= (bands[b+1] - bands[b]) / (sampleRate / self->fftSize);
     }
-
-    free(windowed);
-    free(magnitudes);
-    free(realp);
-    free(imagp);
-    vDSP_destroy_fftsetup(fftSetup);
 }
 
 void AudioInputCallback(void * inUserData,
@@ -278,20 +291,25 @@ void AudioInputCallback(void * inUserData,
     
     int16_t *pcm = (int16_t *)inBuffer->mAudioData;
     float bandValues[5];
-    computeFiveBands(pcm, n, WHISPER_SAMPLE_RATE, bandValues);
+    computeFiveBands((float *)pcm, n, WHISPER_SAMPLE_RATE, state->mSelf, bandValues);
 
-    RNWhisper *module = [RNWhisper sharedInstance];
-    if (module) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [module sendEventWithName:@"@RNWhisper_onAudioLevels"
-                body:@{
-                    @"band1": @(bandValues[0]),
-                    @"band2": @(bandValues[1]),
-                    @"band3": @(bandValues[2]),
-                    @"band4": @(bandValues[3]),
-                    @"band5": @(bandValues[4])
-                }];
-        });
+    CFTimeInterval now = CACurrentMediaTime() * 1000; // ms
+    if (now - state->mSelf->lastEmitTime >= 50) { // throttle 50ms
+        state->mSelf->lastEmitTime = now;
+
+        RNWhisper *module = [RNWhisper sharedInstance];
+        if (module) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [module sendEventWithName:@"@RNWhisper_onAudioLevels"
+                    body:@{
+                        @"band1": @(bandValues[0]),
+                        @"band2": @(bandValues[1]),
+                        @"band3": @(bandValues[2]),
+                        @"band4": @(bandValues[3]),
+                        @"band5": @(bandValues[4])
+                    }];
+            });
+        }
     }
 
     if (totalNSamples + n > state->job->audio_sec * WHISPER_SAMPLE_RATE) {
@@ -708,6 +726,7 @@ struct rnwhisper_segments_callback_data {
 
 - (void)invalidate {
     [self stopCurrentTranscribe];
+    [self deallocFFT];
     whisper_free(self->ctx);
 }
 

@@ -136,7 +136,7 @@ public class WhisperContext {
     finishRealtimeTranscribeJob(jobId, context, sliceNSamples.stream().mapToInt(i -> i).toArray());
   }
 
-  private float[] computeFiveBands(short[] buffer, int n, int sampleRate) {
+  private float[] computeFiveBands(short[] buffer, int sampleRate) {
     int n = Math.min(buffer.length, fftSize);
 
     // Convert to float [-1, 1]
