@@ -29,6 +29,18 @@ import org.jtransforms.fft.FloatFFT_1D;
 public class WhisperContext {
   public static final String NAME = "RNWhisperContext";
 
+  // ===== FFT Fields =====
+  private FloatFFT_1D fft;
+  private int fftSize = 2048;
+
+  private float[] floatBuffer;
+  private float[] fftData;
+  private float[] mags;
+
+  // ===== Throttling =====
+  private long lastEmitTime = 0;
+  private static final long EMIT_INTERVAL_MS = 50; // 20 FPS
+
   private static String loadedLibrary = "";
 
   private static class NativeLogCallback {
@@ -125,49 +137,49 @@ public class WhisperContext {
   }
 
   private float[] computeFiveBands(short[] buffer, int n, int sampleRate) {
-    // Convert PCM16 -> float [-1,1]
-    float[] floatBuffer = new float[n];
+    int n = Math.min(buffer.length, fftSize);
+
+    // Convert to float [-1, 1]
     for (int i = 0; i < n; i++) {
-        floatBuffer[i] = buffer[i] / 32768.0f;
+        floatBuffer[i] = buffer[i] / 32768f;
     }
 
-    // Zero pad to next power of 2
-    int fftSize = 1;
-    while (fftSize < n) fftSize <<= 1;
-    float[] fftData = new float[fftSize];
-    System.arraycopy(floatBuffer, 0, fftData, 0, n);
+    // Zero pad remainder
+    for (int i = n; i < fftSize; i++) {
+        floatBuffer[i] = 0f;
+    }
 
-    // Real FFT
-    FloatFFT_1D fft = new FloatFFT_1D(fftSize);
+    // Copy into FFT buffer
+    System.arraycopy(floatBuffer, 0, fftData, 0, fftSize);
+
+    // Run FFT in-place
     fft.realForward(fftData);
 
     // Compute magnitudes
-    float[] mags = new float[fftSize / 2];
-    mags[0] = Math.abs(fftData[0]); // DC
-    for (int i = 1; i < fftSize / 2; i++) {
+    for (int i = 0; i < fftSize / 2; i++) {
         float re = fftData[2 * i];
         float im = fftData[2 * i + 1];
-        mags[i] = (float)Math.sqrt(re * re + im * im);
+        mags[i] = (float) Math.sqrt(re * re + im * im);
     }
 
-    // 5 frequency bands (0-200, 200-500, 500-1k, 1k-4k, 4k-8k)
-    float[] bands = new float[5];
-    int[] bandLimits = new int[6];
-    bandLimits[0] = 0;
-    bandLimits[1] = (int)(200 * fftSize / sampleRate);
-    bandLimits[2] = (int)(500 * fftSize / sampleRate);
-    bandLimits[3] = (int)(1000 * fftSize / sampleRate);
-    bandLimits[4] = (int)(4000 * fftSize / sampleRate);
-    bandLimits[5] = (int)(8000 * fftSize / sampleRate);
+    float nyquist = sampleRate / 2f;
+    float binSize = nyquist / (fftSize / 2);
 
-    for (int b = 0; b < 5; b++) {
-        float sum = 0f;
-        int count = 0;
-        for (int i = bandLimits[b]; i < bandLimits[b + 1] && i < mags.length; i++) {
-            sum += mags[i];
-            count++;
-        }
-        bands[b] = count > 0 ? sum / count : 0f; // RMS-like average
+    float[] bands = new float[5];
+
+    for (int i = 0; i < mags.length; i++) {
+        float freq = i * binSize;
+
+        if (freq < 200) bands[0] += mags[i];
+        else if (freq < 500) bands[1] += mags[i];
+        else if (freq < 1000) bands[2] += mags[i];
+        else if (freq < 4000) bands[3] += mags[i];
+        else bands[4] += mags[i];
+    }
+
+    // Normalize (important for UI stability)
+    for (int i = 0; i < 5; i++) {
+        bands[i] = (float) Math.log10(bands[i] + 1f);
     }
 
     return bands;
@@ -179,6 +191,10 @@ public class WhisperContext {
     }
 
     recorder = new AudioRecord(AUDIO_SOURCE, SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT, bufferSize);
+    fft = new FloatFFT_1D(fftSize);
+    floatBuffer = new float[fftSize];
+    fftData = new float[fftSize];
+    mags = new float[fftSize / 2];
 
     int state = recorder.getState();
     if (state != AudioRecord.STATE_INITIALIZED) {
@@ -219,14 +235,20 @@ public class WhisperContext {
               int n = recorder.read(buffer, 0, bufferSize);
               if (n == 0) continue;
 
-              float[] bands = computeFiveBands(buffer, n, SAMPLE_RATE);
-              WritableMap audioEvent = Arguments.createMap();
-              audioEvent.putDouble("band1", bands[0]);
-              audioEvent.putDouble("band2", bands[1]);
-              audioEvent.putDouble("band3", bands[2]);
-              audioEvent.putDouble("band4", bands[3]);
-              audioEvent.putDouble("band5", bands[4]);
-              eventEmitter.emit("@RNWhisper_onAudioLevels", audioEvent);
+              long now = System.currentTimeMillis();
+              if (now - lastEmitTime >= EMIT_INTERVAL_MS) {
+                  float[] bands = computeFiveBands(buffer, sampleRate);
+
+                  WritableMap audioEvent = Arguments.createMap();
+                  audioEvent.putDouble("band1", bands[0]);
+                  audioEvent.putDouble("band2", bands[1]);
+                  audioEvent.putDouble("band3", bands[2]);
+                  audioEvent.putDouble("band4", bands[3]);
+                  audioEvent.putDouble("band5", bands[4]);
+                  eventEmitter.emit("@RNWhisper_onAudioLevels", audioEvent);
+                  
+                  lastEmitTime = now;
+              }
 
               int totalNSamples = 0;
               for (int i = 0; i < sliceNSamples.size(); i++) {
