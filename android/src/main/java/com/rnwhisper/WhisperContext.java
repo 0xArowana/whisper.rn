@@ -168,6 +168,22 @@ public class WhisperContext {
               int n = recorder.read(buffer, 0, bufferSize);
               if (n == 0) continue;
 
+              // --- AUDIO LEVELS CALCULATION ---
+              float sum = 0f;
+              float peak = 0f;
+              for (int i = 0; i < n; i++) {
+                  float sample = buffer[i] / 32768.0f; // normalize to [-1, 1]
+                  sum += sample * sample;
+                  if (Math.abs(sample) > peak) peak = Math.abs(sample);
+              }
+              float rms = (float) Math.sqrt(sum / n);
+
+              // Emit event to JS for visualizer
+              WritableMap audioEvent = Arguments.createMap();
+              audioEvent.putDouble("rms", rms);
+              audioEvent.putDouble("peak", peak);
+              eventEmitter.emit("@RNWhisper_onAudioLevels", audioEvent);
+
               int totalNSamples = 0;
               for (int i = 0; i < sliceNSamples.size(); i++) {
                 totalNSamples += sliceNSamples.get(i);

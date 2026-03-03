@@ -215,8 +215,28 @@ void AudioInputCallback(void * inUserData,
     }
 
     const int n = inBuffer->mAudioDataByteSize / 2;
-
     int nSamples = state->sliceNSamples[state->sliceIndex];
+    
+    int16_t *pcm = (int16_t *)inBuffer->mAudioData;
+    float sumSquares = 0.0f;
+    float peak = 0.0f;
+    for (int i = 0; i < n; i++) {
+        float sample = pcm[i] / 32768.0f;
+        sumSquares += sample * sample;
+        if (fabs(sample) > peak) peak = fabs(sample);
+    }
+    float rms = sqrtf(sumSquares / n);
+
+    RNWhisper *module = [RNWhisper sharedInstance];
+    if (module) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [module sendEventWithName:@"@RNWhisper_onAudioLevels"
+                body:@{
+                    @"rms": @(rms),
+                    @"peak": @(peak)
+                }];
+        });
+    }
 
     if (totalNSamples + n > state->job->audio_sec * WHISPER_SAMPLE_RATE) {
         NSLog(@"[RNWhisper] Audio buffer is full, stop capturing");

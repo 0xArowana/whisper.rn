@@ -14,6 +14,15 @@
 
 @implementation RNWhisper
 
+static RNWhisper *sharedInstance = nil;
+
+- (instancetype)init {
+    if (self = [super init]) {
+        sharedInstance = self;
+    }
+    return self;
+}
+
 NSMutableDictionary *contexts;
 NSMutableDictionary *vadContexts;
 
@@ -118,6 +127,7 @@ RCT_REMAP_METHOD(initContext,
     @"@RNWhisper_onRealtimeTranscribe",
     @"@RNWhisper_onRealtimeTranscribeEnd",
     @"@RNWhisper_onNativeLog",
+    @"@RNWhisper_onAudioLevels",
   ];
 }
 

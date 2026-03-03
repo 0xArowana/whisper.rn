@@ -92,8 +92,10 @@ const EVENT_ON_NATIVE_LOG = '@RNWhisper_onNativeLog'
 
 const EVENT_ON_REALTIME_TRANSCRIBE = '@RNWhisper_onRealtimeTranscribe'
 const EVENT_ON_REALTIME_TRANSCRIBE_END = '@RNWhisper_onRealtimeTranscribeEnd'
+const EVENT_ON_AUDIO_LEVELS = '@RNWhisper_onAudioLevels'
 
 const logListeners: Array<(level: string, text: string) => void> = []
+const audioLevelListeners: Array<(rms: number, peak: number) => void> = []
 
 // @ts-ignore
 if (EventEmitter) {
@@ -101,6 +103,13 @@ if (EventEmitter) {
     EVENT_ON_NATIVE_LOG,
     (evt: { level: string; text: string }) => {
       logListeners.forEach((listener) => listener(evt.level, evt.text))
+    },
+  )
+
+  EventEmitter.addListener(
+    EVENT_ON_AUDIO_LEVELS,
+    (evt: { rms: number; peak: number }) => {
+      audioLevelListeners.forEach((listener) => listener(evt.rms, evt.peak))
     },
   )
   // Trigger unset to use default log callback
@@ -891,6 +900,18 @@ export function addNativeLogListener(
   return {
     remove: () => {
       logListeners.splice(logListeners.indexOf(listener), 1)
+    },
+  }
+}
+
+export function addAudioLevelListener(
+  listener: (rms: number, peak: number) => void,
+) {
+  audioLevelListeners.push(listener)
+  return {
+    remove: () => {
+      const index = audioLevelListeners.indexOf(listener)
+      if (index !== -1) audioLevelListeners.splice(index, 1)
     },
   }
 }
