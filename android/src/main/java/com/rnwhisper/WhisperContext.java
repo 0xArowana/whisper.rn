@@ -237,7 +237,7 @@ public class WhisperContext {
 
               long now = System.currentTimeMillis();
               if (now - lastEmitTime >= EMIT_INTERVAL_MS) {
-                  float[] bands = computeFiveBands(buffer, sampleRate);
+                  float[] bands = computeFiveBands(buffer, SAMPLE_RATE);
 
                   WritableMap audioEvent = Arguments.createMap();
                   audioEvent.putDouble("band1", bands[0]);
