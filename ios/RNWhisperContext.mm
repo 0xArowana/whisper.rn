@@ -286,21 +286,23 @@ void AudioInputCallback(void * inUserData,
     computeFiveBands(pcm, n, WHISPER_SAMPLE_RATE, bandValues);
     free(pcm);
     RNWhisper *whisperModule = [RNWhisper sharedInstance];
-    if (whisperModule) {
+    if (whisperModule && ![(RNWhisperContext *)state->mSelf isInvalidated]) {
         float band1 = bandValues[0];
         float band2 = bandValues[1];
         float band3 = bandValues[2];
         float band4 = bandValues[3];
         float band5 = bandValues[4];
         dispatch_async(dispatch_get_main_queue(), ^{
-            [whisperModule sendEventWithName:@"@RNWhisper_onAudioLevels"
-                body:@{
+            if (![state->mSelf isInvalidated]) {
+                [whisperModule sendEventWithName:@"@RNWhisper_onAudioLevels"
+                                            body:@{
                     @"band1": @(band1),
                     @"band2": @(band2),
                     @"band3": @(band3),
                     @"band4": @(band4),
                     @"band5": @(band5)
                 }];
+            }
         });
     }
 
@@ -441,6 +443,10 @@ void AudioInputCallback(void * inUserData,
         [self fullTranscribeSamples:state];
     }
     state->isTranscribing = false;
+}
+
+- (bool)isInvalidated {
+    return self->isInvalidated;
 }
 
 - (bool)isCapturing {
@@ -659,6 +665,7 @@ struct rnwhisper_segments_callback_data {
   audioData:(float *)audioData
   audioDataCount:(int)audioDataCount
 {
+    if (!self->ctx) return -1;
     whisper_reset_timings(self->ctx);
     int code = whisper_full_parallel(self->ctx, job->params, audioData, audioDataCount, job->n_processors);
     if (job && job->is_aborted()) code = -999;
@@ -717,8 +724,10 @@ struct rnwhisper_segments_callback_data {
 }
 
 - (void)invalidate {
+    self->isInvalidated = YES;
     [self stopCurrentTranscribe];
     whisper_free(self->ctx);
+    self->ctx = nullptr;
 }
 
 @end

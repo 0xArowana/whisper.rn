@@ -45,6 +45,7 @@ typedef struct {
     RNWhisperContextRecordState recordState;
     NSString * reasonNoMetal;
     bool isMetalEnabled;
+    BOOL isInvalidated;
 }
 
 + (void)toggleNativeLog:(BOOL)enabled onEmitLog:(void (^)(NSString *level, NSString *text))onEmitLog;
@@ -66,6 +67,7 @@ typedef struct {
 - (void)stopTranscribe:(int)jobId;
 - (void)stopCurrentTranscribe;
 - (bool)isCapturing;
+- (bool)isInvalidated;
 - (bool)isTranscribing;
 - (bool)isStoppedByAction;
 - (NSMutableDictionary *)getTextSegments;
