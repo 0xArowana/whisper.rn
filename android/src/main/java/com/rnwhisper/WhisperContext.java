@@ -213,10 +213,11 @@ public class WhisperContext {
       @Override
       public void run() {
         try {
-          short[] buffer = new short[bufferSize];
+          final int levelBufferSize = 256;
+          short[] buffer = new short[levelBufferSize];
           while (isCapturing) {
             try {
-              int n = recorder.read(buffer, 0, bufferSize);
+              int n = recorder.read(buffer, 0, levelBufferSize);
               if (n == 0) continue;
 
               float[] bands = computeFiveBands(buffer, n, SAMPLE_RATE);
