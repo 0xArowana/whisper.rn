@@ -4,7 +4,7 @@
 #import <Accelerate/Accelerate.h>
 #include <vector>
 
-#define NUM_BYTES_PER_BUFFER 16 * 1024
+#define NUM_BYTES_PER_BUFFER 1024
 
 @implementation RNWhisperContext
 
@@ -198,7 +198,7 @@ static void computeFiveBands(float *pcm, int n, float sampleRate, float *bandVal
     if (n < 2) return;
     
     // FFT setup
-    int log2n = (int)log2f(n);
+    int log2n = (int)ceilf(log2f(n));
     
     if (log2n < 1) return;
     
@@ -208,9 +208,8 @@ static void computeFiveBands(float *pcm, int n, float sampleRate, float *bandVal
     float *windowed = (float *)malloc(sizeof(float) * fftSize);
     float *magnitudes = (float *)malloc(sizeof(float) * (fftSize / 2));
 
-    // Apply Hann window
-    vDSP_hann_window(windowed, fftSize, vDSP_HANN_NORM);
-    vDSP_vmul(pcm, 1, windowed, 1, windowed, 1, fftSize);
+    memset(windowed, 0, sizeof(float) * fftSize);
+    memcpy(windowed, pcm, sizeof(float) * n);
 
     // Prepare complex buffer
     DSPSplitComplex splitComplex;
@@ -237,7 +236,7 @@ static void computeFiveBands(float *pcm, int n, float sampleRate, float *bandVal
     float bands[6] = {0, 200, 500, 1000, 4000, 8000};
     for (int i = 0; i < fftSize / 2; i++) {
         float freq = ((float)i * sampleRate) / (float)fftSize;
-        float mag = sqrtf(magnitudes[i] / (fftSize / 2));
+        float mag = sqrtf(magnitudes[i]) * 0.125f;
         for (int b = 0; b < 5; b++) {
             if (freq >= bands[b] && freq < bands[b+1]) {
                 bandValues[b] += mag;
