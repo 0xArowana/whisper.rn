@@ -1,4 +1,5 @@
 #import "RNWhisperContext.h"
+#import "RNWhisper.h"
 #import <Metal/Metal.h>
 #import <Accelerate/Accelerate.h>
 #include <vector>
@@ -276,20 +277,29 @@ void AudioInputCallback(void * inUserData,
     const int n = inBuffer->mAudioDataByteSize / 2;
     int nSamples = state->sliceNSamples[state->sliceIndex];
     
-    int16_t *pcm = (int16_t *)inBuffer->mAudioData;
+    int16_t *pcmRaw = (int16_t *)inBuffer->mAudioData;
+    float *pcm = (float *)malloc(sizeof(float) * n);
+    for (int i = 0; i < n; i++) {
+        pcm[i] = (float)pcmRaw[i] / 32768.0f;
+    }
     float bandValues[5];
     computeFiveBands(pcm, n, WHISPER_SAMPLE_RATE, bandValues);
-
-    RNWhisper *module = [RNWhisper sharedInstance];
-    if (module) {
+    free(pcm);
+    RNWhisper *whisperModule = [RNWhisper sharedInstance];
+    if (whisperModule) {
+        float band1 = bandValues[0];
+        float band2 = bandValues[1];
+        float band3 = bandValues[2];
+        float band4 = bandValues[3];
+        float band5 = bandValues[4];
         dispatch_async(dispatch_get_main_queue(), ^{
-            [module sendEventWithName:@"@RNWhisper_onAudioLevels"
+            [whisperModule sendEventWithName:@"@RNWhisper_onAudioLevels"
                 body:@{
-                    @"band1": @(bandValues[0]),
-                    @"band2": @(bandValues[1]),
-                    @"band3": @(bandValues[2]),
-                    @"band4": @(bandValues[3]),
-                    @"band5": @(bandValues[4])
+                    @"band1": @(band1),
+                    @"band2": @(band2),
+                    @"band3": @(band3),
+                    @"band4": @(band4),
+                    @"band5": @(band5)
                 }];
         });
     }
