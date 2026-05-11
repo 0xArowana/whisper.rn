@@ -195,8 +195,13 @@ bool vad(RNWhisperContextRecordState *state, int sliceIndex, int nSamples, int n
 }
 
 static void computeFiveBands(float *pcm, int n, float sampleRate, float *bandValues) {
+    if (n < 2) return;
+    
     // FFT setup
     int log2n = (int)log2f(n);
+    
+    if (log2n < 1) return;
+    
     int fftSize = 1 << log2n;
 
     // Allocate FFT buffers
@@ -276,6 +281,11 @@ void AudioInputCallback(void * inUserData,
 
     const int n = inBuffer->mAudioDataByteSize / 2;
     int nSamples = state->sliceNSamples[state->sliceIndex];
+    
+    if (n < 2) {
+        AudioQueueEnqueueBuffer(state->queue, inBuffer, 0, NULL);
+        return;
+    }
     
     int16_t *pcmRaw = (int16_t *)inBuffer->mAudioData;
     float *pcm = (float *)malloc(sizeof(float) * n);
