@@ -16,6 +16,10 @@
 
 static RNWhisper *sharedInstance = nil;
 
++ (instancetype)sharedInstance {
+    return sharedInstance;
+}
+
 - (instancetype)init {
     if (self = [super init]) {
         sharedInstance = self;

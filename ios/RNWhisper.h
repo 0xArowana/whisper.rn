@@ -15,5 +15,6 @@
 #import <ReactCommon/RCTTurboModule.h>
 
 @interface RNWhisper : RCTEventEmitter <RCTBridgeModule>
++ (instancetype)sharedInstance;
 
 @end
